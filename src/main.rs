@@ -1,16 +1,17 @@
-type Xs = [u32; 4];
+type Xs = [core::num::Wrapping<u32>; 4];
 
 fn xorshift(xs: &mut Xs) -> u32 {
     let mut t = xs[3];
 
-    xs[1] = xs[0];
-    xs[2] = xs[1];
     xs[3] = xs[2];
+    xs[2] = xs[1];
+    xs[1] = xs[0];
 
     t ^= t << 11;
     t ^= t >> 8;
     xs[0] = t ^ xs[0] ^ (xs[0] >> 19);
-    xs[0]
+
+    xs[0].0
 }
 
 fn xs_u32(xs: &mut Xs, min: u32, max: u32) -> u32 {
@@ -29,6 +30,20 @@ fn xs_choice(xs: &mut Xs, slice: &[u32]) -> u32 {
     slice[xs_u32(xs, 0, len as u32) as usize]
 }
 
+#[test]
+fn xs_test() {
+    let xs: &mut Xs = &mut [Wrapping(42),Wrapping(42),Wrapping(42),Wrapping(42)];
+    for _ in 0..1000 {
+        xs_u32(xs, 1, 0x16C);
+    }
+
+    for _ in 0..10 {
+        xs_u32(xs, 1, 0x16C);
+        dbg!(&xs);
+    }
+    panic!()
+}
+
 use std::io::{SeekFrom, prelude::*};
 use std::{fs, fs::OpenOptions};
 use std::collections::{HashMap, HashSet};
@@ -36,6 +51,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::ffi::CString;
+use std::num::Wrapping;
 
 #[derive(Serialize, Deserialize)]
 struct Room {
@@ -92,12 +108,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     names_to_skip.insert("hos_10");
     names_to_skip.insert("mac_05");
 
-    let room_names = room_data.keys()
+    let mut room_names = room_data.keys()
         .filter(|name| {
             !names_to_skip.contains(*name)
         })
         .map(|x| *x)
         .collect::<Vec<&str>>();
+    room_names.sort();
 
     // TODO automatically endian-convert if needed.
     // make sure this is a paper mario rom with proper endianness
@@ -140,10 +157,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let room_base_ptr = 0x80240000;
+    let room_base_ptr: u32 = 0x80240000;
     let room_count = 421;
-    let xs: &mut Xs = &mut [42,42,42,42];
-    let mut already_randomized = HashMap::with_capacity(room_count as usize / 2);
+
+    let xs: &mut Xs = &mut [Wrapping(42),Wrapping(42),Wrapping(42),Wrapping(42)];
     for i in 0..room_count {
         output.seek(SeekFrom::Start(0x6B450 + i*0x20))?;
 
@@ -176,16 +193,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let name = name_buf.to_str()?;
 
+        // useless.
+        let mut already_randomized = HashMap::with_capacity(room_count as usize / 2);
         for warp_ptr in room_data[name].warp_ptrs.iter() {
             let rand_room;
+            println!("{} in already_randomized {}", warp_ptr, already_randomized.contains_key(&warp_ptr));
             if already_randomized.contains_key(&warp_ptr) {
                 rand_room = already_randomized[&warp_ptr]
             } else {
                 rand_room = xs_choice_str(xs, &room_names);
+                println!("xs_choice_str [{}, {}, {}, {}]", xs[0], xs[1], xs[2], xs[3]);
+                already_randomized.insert(warp_ptr, rand_room);
             }
-            already_randomized.insert(warp_ptr, rand_room);
-
             let rand_entrance = xs_choice(xs, &room_data[rand_room].entrances);
+            println!("xs_choice [{}, {}, {}, {}]", xs[0], xs[1], xs[2], xs[3]);
 
             output.seek(SeekFrom::Start((room_ptr + warp_ptr - room_base_ptr + 0xC) as _))?;
             let warp_room_ptr = read_u32!();
@@ -200,10 +221,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let read_u32 = read_u32!();
             if 0 < read_u32 && read_u32 < 0x200 {
                 output.seek(SeekFrom::Current(-4))?;
+                output.write(&rand_item.to_be_bytes())?;
             }
-            output.write(&rand_item.to_be_bytes())?;
         }
+        println!("{} [{}, {}, {}, {}]", i, xs[0], xs[1], xs[2], xs[3]);
     }
+
+    dbg!(&xs);
 
     output.sync_data()?;
     drop(output);
