@@ -193,20 +193,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let name = name_buf.to_str()?;
 
-        // useless.
-        let mut already_randomized = HashMap::with_capacity(room_count as usize / 2);
         for warp_ptr in room_data[name].warp_ptrs.iter() {
-            let rand_room;
-            println!("{} in already_randomized {}", warp_ptr, already_randomized.contains_key(&warp_ptr));
-            if already_randomized.contains_key(&warp_ptr) {
-                rand_room = already_randomized[&warp_ptr]
-            } else {
-                rand_room = xs_choice_str(xs, &room_names);
-                println!("xs_choice_str [{}, {}, {}, {}]", xs[0], xs[1], xs[2], xs[3]);
-                already_randomized.insert(warp_ptr, rand_room);
-            }
+            let rand_room = xs_choice_str(xs, &room_names);
             let rand_entrance = xs_choice(xs, &room_data[rand_room].entrances);
-            println!("xs_choice [{}, {}, {}, {}]", xs[0], xs[1], xs[2], xs[3]);
 
             output.seek(SeekFrom::Start((room_ptr + warp_ptr - room_base_ptr + 0xC) as _))?;
             let warp_room_ptr = read_u32!();
@@ -224,10 +213,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 output.write(&rand_item.to_be_bytes())?;
             }
         }
-        println!("{} [{}, {}, {}, {}]", i, xs[0], xs[1], xs[2], xs[3]);
     }
-
-    dbg!(&xs);
 
     output.sync_data()?;
     drop(output);
