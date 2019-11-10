@@ -98,10 +98,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     d!(for RoomMode : RoomMode::StartWithHammer);
 
     enum StartMode {
-        None,
+        Standard,
         Quick
     }
-    d!(for StartMode : StartMode::None);
+    d!(for StartMode : StartMode::Standard);
 
     #[derive(PartialEq, Eq)]
     enum ItemMode {
@@ -153,10 +153,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }};
     }
 
+    const HELP: &'static str = "--help";
+    const QUICK_START: &'static str = "--quick-start";
+
     while let Some(s) = args.next() {
         let s: &str = &s;
         match s {
-            "--quick-start" => start = StartMode::Quick,
+            HELP => {
+                let accepted_args = [
+                    HELP,
+                    QUICK_START,
+                    SHUFFLE_ITEMS,
+                    SHUFFLE_BADGES,
+                    SHUFFLE_USED_BADGES,
+                    TOTAL_ROOM_SHUFFLE,
+                    NO_ROOM_SHUFFLE
+                ];
+                println!("reads {}, writes to {}", input_path, output_path);
+                println!("accepted args: ");
+                for arg in accepted_args.iter() {
+                    println!("    {}", arg);
+                }
+                std::process::exit(0)
+            },
+            QUICK_START => start = StartMode::Quick,
             SHUFFLE_ITEMS => set_item_mode!(ItemMode::TotalRandom),
             SHUFFLE_BADGES => set_item_mode!(ItemMode::ShuffleBadges),
             SHUFFLE_USED_BADGES => set_item_mode!(ItemMode::ShuffleUsedBadges),
