@@ -30,6 +30,18 @@ fn xs_choice(xs: &mut Xs, slice: &[u32]) -> u32 {
     slice[xs_u32(xs, 0, len as u32) as usize]
 }
 
+fn xs_shuffle(xs: &mut Xs, v: &mut Vec<u32>) {
+    let len = v.len();
+    if len < 2 {
+        return;
+    }
+    for i in 0..(len - 2) {
+        // Oh gee this won't shuffle the whole vec if there are ever 2^32 elements. Meh.
+        let j = xs_u32(xs,i as u32, len as u32) as usize;
+        v.swap(i, j);
+    }
+}
+
 #[test]
 fn xs_test() {
     let xs: &mut Xs = &mut [Wrapping(42),Wrapping(42),Wrapping(42),Wrapping(42)];
@@ -77,30 +89,79 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_path = "./Paper Mario (USA).z64";
     let output_path = "./Paper Mario (USA) Shuffled.z64";
 
+    #[derive(Copy, Clone, PartialEq, Eq)]
+    enum RoomMode {
+        None,
+        StartWithHammer,
+        TotalRandom
+    }
+    d!(for RoomMode : RoomMode::StartWithHammer);
+
     enum StartMode {
-        Default,
+        None,
         Quick
     }
-    d!(for StartMode : StartMode::Default);
+    d!(for StartMode : StartMode::None);
+
+    #[derive(PartialEq, Eq)]
     enum ItemMode {
-        Default,
-        Shuffle
+        None,
+        TotalRandom,
+        ShuffleBadges,
+        ShuffleUsedBadges,
     }
-    d!(for ItemMode : ItemMode::Default);
+    d!(for ItemMode : ItemMode::None);
 
     let mut args = std::env::args();
     //exe name
     args.next();
 
     let mut start = d!();
-    let mut item = d!();
+    let mut item_mode = d!();
+    let mut room_mode = d!();
+
+    const SHUFFLE_ITEMS: &'static str = "--shuffle-items";
+    const SHUFFLE_BADGES: &'static str = "--shuffle-badges";
+    const SHUFFLE_USED_BADGES: &'static str = "--shuffle-used-badges";
+
+    macro_rules! set_item_mode {
+        ($mode: expr) => {{
+            if item_mode != d!() {
+                eprintln!(
+                    "Only one of {:?} may be used.",
+                     [SHUFFLE_ITEMS, SHUFFLE_BADGES, SHUFFLE_USED_BADGES]
+                 );
+                std::process::exit(2)
+            }
+            item_mode = $mode;
+        }};
+    }
+
+    const TOTAL_ROOM_SHUFFLE: &'static str = "--total-room-shuffle";
+    const NO_ROOM_SHUFFLE: &'static str = "--no-room-shuffle";
+
+    macro_rules! set_room_mode {
+        ($mode: expr) => {{
+            if room_mode != d!() {
+                eprintln!(
+                    "Only one of {:?} may be used.",
+                     [TOTAL_ROOM_SHUFFLE, NO_ROOM_SHUFFLE]
+                 );
+                std::process::exit(3)
+            }
+            room_mode = $mode;
+        }};
+    }
 
     while let Some(s) = args.next() {
         let s: &str = &s;
         match s {
             "--quick-start" => start = StartMode::Quick,
-            "--shuffle-items" => item = ItemMode::Shuffle,
-
+            SHUFFLE_ITEMS => set_item_mode!(ItemMode::TotalRandom),
+            SHUFFLE_BADGES => set_item_mode!(ItemMode::ShuffleBadges),
+            SHUFFLE_USED_BADGES => set_item_mode!(ItemMode::ShuffleUsedBadges),
+            NO_ROOM_SHUFFLE => set_room_mode!(RoomMode::None),
+            TOTAL_ROOM_SHUFFLE => set_room_mode!(RoomMode::TotalRandom),
             _ => {
                 eprintln!("unknown arg {:?}", s);
                 std::process::exit(1)
@@ -211,10 +272,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
     }
 
+    let xs: &mut Xs = &mut [Wrapping(43),Wrapping(42),Wrapping(42),Wrapping(42)];
+
+    enum ItemState {
+        None,
+        TotalRandom,
+        BadgeDeck(Vec<u32>)
+    }
+
+    let mut item_state = match item_mode {
+        ItemMode::None => ItemState::None,
+        ItemMode::TotalRandom => ItemState::TotalRandom,
+        ItemMode::ShuffleBadges => {
+            let mut deck = get_badges_set().into_iter().collect();
+            xs_shuffle(xs, &mut deck);
+            ItemState::BadgeDeck(deck)
+        },
+        ItemMode::ShuffleUsedBadges => {
+            let mut deck = get_used_badges();
+            xs_shuffle(xs,&mut deck);
+            ItemState::BadgeDeck(deck)
+        },
+    };
+
     let room_count = 421;
-
-    let xs: &mut Xs = &mut [Wrapping(42),Wrapping(42),Wrapping(42),Wrapping(42)];
-
     for i in 0..room_count {
         output.seek(SeekFrom::Start(0x6B450 + i * 0x20))?;
 
@@ -240,32 +321,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let name = name_buf.to_str()?;
 
-        dbg!(i, name, room_ptr);
+        match room_mode {
+            RoomMode::None => {},
+            RoomMode::TotalRandom | RoomMode::StartWithHammer => {
+                for &warp_ptr in room_data[name].warp_ptrs.iter() {
+                    let rand_room = xs_choice_str(xs, &room_names);
+                    let rand_entrance = xs_choice(xs, &room_data[rand_room].entrances);
 
-        for &warp_ptr in room_data[name].warp_ptrs.iter() {
-            let rand_room = xs_choice_str(xs, &room_names);
-            let rand_entrance = xs_choice(xs, &room_data[rand_room].entrances);
-
-            write_out_room_entrance!(room_ptr, warp_ptr, rand_room, rand_entrance);
+                    write_out_room_entrance!(room_ptr, warp_ptr, rand_room, rand_entrance);
+                }
+            },
         }
 
-        if let ItemMode::Shuffle = item {
-            for item_ptr in room_data[name].items.iter() {
-                output.seek(SeekFrom::Start((room_ptr + item_ptr - room_base_ptr) as _))?;
-                let rand_item = xs_u32(xs, 1, 0x16C);
-                let read_u32 = read_u32!();
-                if 0 < read_u32 && read_u32 < 0x200 {
-                    output.seek(SeekFrom::Current(-4))?;
-                    output.write(&rand_item.to_be_bytes())?;
+        match &mut item_state {
+            ItemState::None => {}
+            ItemState::BadgeDeck(deck) => {
+                let badges_set = get_badges_set();
+                for item_ptr in room_data[name].items.iter() {
+                    output.seek(SeekFrom::Start((room_ptr + item_ptr - room_base_ptr) as _))?;
+                    let read_u32 = read_u32!();
+                    if badges_set.contains(&read_u32) {
+                        output.seek(SeekFrom::Current(-4))?;
+                        if let Some(item) = deck.pop() {
+                            println!("{:010x} -> {:010x}", read_u32, item);
+                            output.write(&item.to_be_bytes())?;
+                        }
+                    }
+                }
+            }
+            ItemState::TotalRandom => {
+                for item_ptr in room_data[name].items.iter() {
+                    output.seek(SeekFrom::Start((room_ptr + item_ptr - room_base_ptr) as _))?;
+                    let rand_item = xs_u32(xs, 1, 0x16C);
+                    let read_u32 = read_u32!();
+                    if 0 < read_u32 && read_u32 < 0x200 {
+                        output.seek(SeekFrom::Current(-4))?;
+                        output.write(&rand_item.to_be_bytes())?;
+                    }
                 }
             }
         }
     }
 
-    // start by the hammer by making "kmr_00" (Mario's fall area) lead there.
-    write_out_room_entrance!(0x8ABF90, 2149846604, "kmr_04", 02);
-    write_out_room_entrance!(0x8ABF90, 2149854336, "kmr_04", 02);
-
+    match room_mode {
+        RoomMode::TotalRandom | RoomMode::None => {},
+        RoomMode::StartWithHammer => {
+            // start by the hammer by making "kmr_00" (Mario's fall area) lead there.
+            write_out_room_entrance!(0x8ABF90, 2149846604, "kmr_04", 02);
+            write_out_room_entrance!(0x8ABF90, 2149854336, "kmr_04", 02);
+        },
+    }
 
     output.sync_data()?;
     drop(output);
@@ -279,4 +384,168 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("failed to execute rn64crc");
 
     Ok(())
+}
+
+fn get_badges_set() -> HashSet<u32> {
+    // source: http://shrines.rpgclassics.com/n64/papermario/hacking.shtml
+    // endian swapped from the above.
+    vec![
+        0x00E0, // Spin Smash
+        0x00E1, // Multibounce
+        0x00E2, // Power Plus
+        0x00E3, // Dodge Master
+        0x00E4, // Power Bounce
+        0x00E5, // Spike Shield
+        0x00E6, // First Attack
+        0x00E7, // HP Plus
+        0x00E8, // Quake Hammer
+        0x00E9, // Double Dip
+        0x00EB, // Sleep Stomp
+        0x00EC, // Fire Shield
+        0x00ED, // Quick Change
+        0x00EE, // D-Down Pound
+        0x00EF, // Dizzy Stomp
+        0x00F1, // Pretty Lucky
+        0x00F2, // Feeling Fine
+        0x00F3, // Attack FX A
+        0x00F4, // All or Nothing
+        0x00F5, // HP Drain
+        0x00F7, // Slow Go
+        0x00F8, // FP Plus
+        0x00F9, // Mega Rush
+        0x00FA, // Ice Power
+        0x00FB, // Defend Plus
+        0x00FC, // Pay Off
+        0x00FD, // Money Money
+        0x00FE, // Chill Out
+        0x00FF, // Happy Heart
+        0x0100, // Zap Tap
+        0x0102, // Right On!
+        0x0103, // Runaway Pay
+        0x0104, // Refund
+        0x0105, // Flower Saver
+        0x0106, // Triple Dip
+        0x0107, // Hammer Throw
+        0x0108, // Mega Quake
+        0x0109, // Smash Charge
+        0x010A, // Jump Charge
+        0x010B, // S. Smash Chg.
+        0x010C, // S. Jump Chg.
+        0x010D, // Power Rush
+        0x0111, // Last Stand
+        0x0112, // Close Call
+        0x0113, // P-Up, D-Down
+        0x0114, // Lucky Day
+        0x0116, // P-Down, D-Up
+        0x0117, // Power Quake
+        0x011A, // Heart Finder
+        0x011B, // Flower Fiender
+        0x011C, // Spin Attack
+        0x011D, // Dizzy Attack
+        0x011E, // I Spy
+        0x011F, // Speedy Spin
+        0x0120, // Bump Attack
+        0x0121, // Power Jump
+        0x0123, // Mega Jump
+        0x0124, // Power Smash
+        0x0126, // Mega Smash
+        0x0127, // Power Smash
+        0x0128, // Power Smash
+        0x0129, // Deep Focus
+        0x012B, // Shrink Smash
+        0x012E, // D-Down Jump
+        0x012F, // Shrink Stomp
+        0x0130, // Damage Dodge
+        0x0132, // Deep Focus
+        0x0133, // Deep Focus
+        0x0134, // HP Plus
+        0x0135, // FP Plus
+        0x0136, // Happy Heart
+        0x0137, // Happy Heart
+        0x0138, // Flower Saver
+        0x0139, // Flower Saver
+        0x013A, // Damage Dodge
+        0x013B, // Damage Dodge
+        0x013C, // Power Plus
+        0x013D, // Power Plus
+        0x013E, // Defend Plus
+        0x013F, // Defend Plus
+        0x0140, // Happy Flower
+        0x0141, // Happy Flower
+        0x0142, // Happy Flower
+        0x0143, // Group Focus
+        0x0144, // Peekaboo
+        0x0145, // Attack FX D
+        0x0146, // Attack FX B
+        0x0147, // Attack FX E
+        0x0148, // Attack FX C
+        0x0149, // Attack FX F
+        0x014A, // HP Plus
+        0x014B, // HP Plus
+        0x014C, // HP Plus
+        0x014D, // FP Plus
+        0x014E, // FP Plus
+        0x014F, // FP Plus
+        0x0151, // Attack FX F
+        0x0152, // Attack FX F
+        0x0153, // Attack FX F
+    ].into_iter().collect()
+}
+
+/// the set from `get_badges_set` includes some badges that were not used in the game.
+/// This contains only the used ones, and duplicates where there were ones in the game.
+fn get_used_badges() -> Vec<u32> {
+    vec![
+        0x00ed,
+        0x00ed,
+        0x012f,
+        0x0124,
+        0x0120,
+        0x0114,
+        0x0121,
+        0x0112,
+        0x0107,
+        0x00e8,
+        0x013a,
+        0x0103,
+        0x011c,
+        0x0148,
+        0x00e5,
+        0x00f7,
+        0x0104,
+        0x0135,
+        0x0109,
+        0x00e4,
+        0x0134,
+        0x011d,
+        0x0146,
+        0x0146,
+        0x0133,
+        0x0133,
+        0x010d,
+        0x0129,
+        0x0111,
+        0x0117,
+        0x0136,
+        0x00e7,
+        0x00f8,
+        0x012e,
+        0x00f9,
+        0x00ec,
+        0x00ef,
+        0x0141,
+        0x0126,
+        0x010c,
+        0x0138,
+        0x0138,
+        0x0147,
+        0x0123,
+        0x0116,
+        0x0113,
+        0x0106,
+        0x00fb,
+        0x00fa,
+        0x0132,
+        0x013c,
+    ]
 }
