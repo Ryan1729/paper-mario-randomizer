@@ -64,6 +64,9 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::ffi::CString;
 use std::num::Wrapping;
+use std::ops::RangeInclusive;
+use std::iter::StepBy;
+use std::convert::TryFrom;
 
 #[derive(Serialize, Deserialize)]
 struct Room {
@@ -103,12 +106,70 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     d!(for StartMode : StartMode::Standard);
 
-    #[derive(PartialEq, Eq)]
+    #[repr(u8)]
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    enum BadgeSections {
+        Map = 0b001,
+        Rowf = 0b010,
+        RowfMap = 0b011,
+        Merlow = 0b100,
+        MerlowMap = 0b101,
+        MerlowRowf = 0b110,
+        MerlowRowfMap = 0b111,
+    }
+
+    impl BadgeSections {
+        // if `other` contains two or more set bits, this is true only if all of those bits are set
+        // in `self`.
+        fn contains(self, other: Self) -> bool {
+            self as u8 & other as u8 == other as u8
+        }
+    }
+
+    impl TryFrom<u8> for BadgeSections {
+        type Error = &'static str;
+
+        fn try_from(value: u8) -> Result<Self, Self::Error> {
+            use BadgeSections::*;
+            match value {
+                 0b001 => Ok(Map),
+                 0b010 => Ok(Rowf),
+                 0b011 => Ok(RowfMap),
+                 0b100 => Ok(Merlow),
+                 0b101 => Ok(MerlowMap),
+                 0b110 => Ok(MerlowRowf),
+                 0b111 => Ok(MerlowRowfMap),
+                _ => Err("Invalid BadgeSections")
+            }
+        }
+    }
+
+    impl std::ops::BitOr for BadgeSections {
+        type Output = BadgeSections;
+
+        fn bitor(self, rhs: Self) -> Self::Output {
+            if let Ok(s) = BadgeSections::try_from(self as u8 | rhs as u8) {
+                s
+            } else {
+                unreachable!()
+            }
+        }
+    }
+
+    impl std::ops::BitOrAssign for BadgeSections {
+        fn bitor_assign(&mut self, rhs: Self) {
+            *self = *self | rhs
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum ItemMode {
         None,
         TotalRandom,
-        ShuffleBadges,
-        ShuffleUsedBadges,
+        ShuffleBadgesGlobally,
+        ShuffleBadgesLocally(BadgeSections),
+        DealUsedInto(BadgeSections),
+        DealAllInto(BadgeSections),
     }
     d!(for ItemMode : ItemMode::None);
 
@@ -121,19 +182,70 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut room_mode = d!();
 
     const SHUFFLE_ITEMS: &'static str = "--shuffle-items";
-    const SHUFFLE_BADGES: &'static str = "--shuffle-badges";
-    const SHUFFLE_USED_BADGES: &'static str = "--shuffle-used-badges";
+    const SHUFFLE_BADGES: &'static str = "--shuffle-badges-globally";
+    const SHUFFLE_MAP_BADGES: &'static str = "--shuffle-map-badges-locally";
+    const SHUFFLE_ROWF_BADGES: &'static str = "--shuffle-rowf-badges-locally";
+    const SHUFFLE_MERLOW_BADGES: &'static str = "--shuffle-merlow-badges-locally";
+    const DEAL_USED_INTO_MAP: &'static str = "--deal-badges-into-map";
+    const DEAL_USED_INTO_ROWF: &'static str = "--deal-badges-into-rowf";
+    const DEAL_USED_INTO_MERLOW: &'static str = "--deal-badges-into-merlow";
+    const DEAL_ALL_INTO_MAP: &'static str = "--deal-from-all-badges-into-map";
+    const DEAL_ALL_INTO_ROWF: &'static str = "--deal-from-all-badges-into-rowf";
+    const DEAL_ALL_INTO_MERLOW: &'static str = "--deal-from-all-badges-into-merlow";
 
     macro_rules! set_item_mode {
         ($mode: expr) => {{
-            if item_mode != d!() {
-                eprintln!(
-                    "Only one of {:?} may be used.",
-                     [SHUFFLE_ITEMS, SHUFFLE_BADGES, SHUFFLE_USED_BADGES]
-                 );
-                std::process::exit(2)
+            let mode = $mode;
+            match (item_mode, mode) {
+                (ItemMode::None, _ ) => {
+                    item_mode = mode;
+                },
+                (ItemMode::ShuffleBadgesLocally(old), ItemMode::ShuffleBadgesLocally(new)) if (old | new) != old => {
+                    item_mode = ItemMode::ShuffleBadgesLocally(old | new);
+                },
+                (ItemMode::DealUsedInto(old), ItemMode::DealUsedInto(new)) if (old | new) != old => {
+                    item_mode = ItemMode::DealUsedInto(old | new);
+                },
+                (ItemMode::DealAllInto(old), ItemMode::DealAllInto(new)) if (old | new) != old => {
+                    item_mode = ItemMode::DealAllInto(old | new);
+                },
+                (ItemMode::TotalRandom, _)
+                |(ItemMode::ShuffleBadgesGlobally, _)
+                |(ItemMode::ShuffleBadgesLocally(_), _)
+                |(ItemMode::DealUsedInto(_), _)
+                |(ItemMode::DealAllInto(_), _) => {
+                    eprintln!(
+                        "Of the flags {:?} only the groups {:?}, {:?}, and {:?} can be mixed together, and only within their own group, not together.",
+                        [
+                            SHUFFLE_ITEMS,
+                            SHUFFLE_BADGES,
+                            SHUFFLE_MAP_BADGES,
+                            SHUFFLE_ROWF_BADGES,
+                            SHUFFLE_MERLOW_BADGES,
+                            DEAL_ALL_INTO_MAP,
+                            DEAL_ALL_INTO_ROWF,
+                            DEAL_ALL_INTO_MERLOW,
+                        ],
+                        [
+                            SHUFFLE_MAP_BADGES,
+                            SHUFFLE_ROWF_BADGES,
+                            SHUFFLE_MERLOW_BADGES,
+                        ],
+                        [
+                            DEAL_USED_INTO_MAP,
+                            DEAL_USED_INTO_ROWF,
+                            DEAL_USED_INTO_MERLOW,
+                        ],
+                        [
+                            DEAL_ALL_INTO_MAP,
+                            DEAL_ALL_INTO_ROWF,
+                            DEAL_ALL_INTO_MERLOW,
+                        ],
+                    );
+                    std::process::exit(2)
+                },
             }
-            item_mode = $mode;
+
         }};
     }
 
@@ -165,7 +277,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     QUICK_START,
                     SHUFFLE_ITEMS,
                     SHUFFLE_BADGES,
-                    SHUFFLE_USED_BADGES,
+                    SHUFFLE_MAP_BADGES,
+                    SHUFFLE_ROWF_BADGES,
+                    SHUFFLE_MERLOW_BADGES,
+                    DEAL_USED_INTO_MAP,
+                    DEAL_USED_INTO_ROWF,
+                    DEAL_USED_INTO_MERLOW,
+                    DEAL_ALL_INTO_MAP,
+                    DEAL_ALL_INTO_ROWF,
+                    DEAL_ALL_INTO_MERLOW,
                     TOTAL_ROOM_SHUFFLE,
                     NO_ROOM_SHUFFLE
                 ];
@@ -178,8 +298,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             QUICK_START => start = StartMode::Quick,
             SHUFFLE_ITEMS => set_item_mode!(ItemMode::TotalRandom),
-            SHUFFLE_BADGES => set_item_mode!(ItemMode::ShuffleBadges),
-            SHUFFLE_USED_BADGES => set_item_mode!(ItemMode::ShuffleUsedBadges),
+            SHUFFLE_BADGES => set_item_mode!(ItemMode::ShuffleBadgesGlobally),
+            SHUFFLE_MAP_BADGES => set_item_mode!(ItemMode::ShuffleBadgesLocally(BadgeSections::Map)),
+            SHUFFLE_ROWF_BADGES => set_item_mode!(ItemMode::ShuffleBadgesLocally(BadgeSections::Rowf)),
+            SHUFFLE_MERLOW_BADGES => set_item_mode!(ItemMode::ShuffleBadgesLocally(BadgeSections::Merlow)),
+            DEAL_USED_INTO_MAP => set_item_mode!(ItemMode::DealUsedInto(BadgeSections::Map)),
+            DEAL_USED_INTO_ROWF => set_item_mode!(ItemMode::DealUsedInto(BadgeSections::Rowf)),
+            DEAL_USED_INTO_MERLOW => set_item_mode!(ItemMode::DealUsedInto(BadgeSections::Merlow)),
+            DEAL_ALL_INTO_MAP => set_item_mode!(ItemMode::DealAllInto(BadgeSections::Map)),
+            DEAL_ALL_INTO_ROWF => set_item_mode!(ItemMode::DealAllInto(BadgeSections::Rowf)),
+            DEAL_ALL_INTO_MERLOW => set_item_mode!(ItemMode::DealAllInto(BadgeSections::Merlow)),
             NO_ROOM_SHUFFLE => set_room_mode!(RoomMode::None),
             TOTAL_ROOM_SHUFFLE => set_room_mode!(RoomMode::TotalRandom),
             _ => {
@@ -294,6 +422,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let xs: &mut Xs = &mut [Wrapping(43),Wrapping(42),Wrapping(42),Wrapping(42)];
 
+    #[derive(Debug)]
     enum ItemState {
         None,
         TotalRandom,
@@ -301,18 +430,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut item_state = match item_mode {
-        ItemMode::None => ItemState::None,
         ItemMode::TotalRandom => ItemState::TotalRandom,
-        ItemMode::ShuffleBadges => {
-            let mut deck = get_badges_set().into_iter().collect();
+        ItemMode::ShuffleBadgesGlobally => {
+            let mut deck = get_map_badges()
+                .into_iter()
+                .chain(get_rowf_shop_badges())
+                .chain(get_merlow_shop_badges())
+                .collect();
             xs_shuffle(xs, &mut deck);
             ItemState::BadgeDeck(deck)
         },
-        ItemMode::ShuffleUsedBadges => {
+        ItemMode::DealUsedInto(sections) if sections.contains(BadgeSections::Map) => {
             let mut deck = get_used_badges();
+            xs_shuffle(xs, &mut deck);
+            ItemState::BadgeDeck(deck)
+        }
+        ItemMode::DealAllInto(sections) if sections.contains(BadgeSections::Map) => {
+            let mut deck = get_badges_set().into_iter().collect();
+            xs_shuffle(xs, &mut deck);
+            ItemState::BadgeDeck(deck)
+        }
+        ItemMode::ShuffleBadgesLocally(sections) if sections.contains(BadgeSections::Map) => {
+            let mut deck = get_map_badges();
             xs_shuffle(xs,&mut deck);
             ItemState::BadgeDeck(deck)
         },
+        ItemMode::None | ItemMode::DealUsedInto(_) | ItemMode::DealAllInto(_) | ItemMode::ShuffleBadgesLocally(_) => ItemState::None,
     };
 
     let room_count = 421;
@@ -356,6 +499,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match &mut item_state {
             ItemState::None => {}
             ItemState::BadgeDeck(deck) => {
+                // shuffle room badges
                 let badges_set = get_badges_set();
                 for item_ptr in room_data[name].items.iter() {
                     output.seek(SeekFrom::Start((room_ptr + item_ptr - room_base_ptr) as _))?;
@@ -363,7 +507,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if badges_set.contains(&read_u32) {
                         output.seek(SeekFrom::Current(-4))?;
                         if let Some(item) = deck.pop() {
-                            println!("{:010x} -> {:010x}", read_u32, item);
                             output.write(&item.to_be_bytes())?;
                         }
                     }
@@ -375,6 +518,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let rand_item = xs_u32(xs, 1, 0x16C);
                     let read_u32 = read_u32!();
                     if 0 < read_u32 && read_u32 < 0x200 {
+                        if get_badges_set().contains(&read_u32) {
+                            println!("{:#010x}",read_u32);
+                        }
                         output.seek(SeekFrom::Current(-4))?;
                         output.write(&rand_item.to_be_bytes())?;
                     }
@@ -392,6 +538,129 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     }
 
+    match item_mode {
+        ItemMode::None => {},
+        ItemMode::TotalRandom => {
+            // TODO if we stuff non-badge item ids in the badge shops here does it work?
+
+            let badges: Vec<_> = get_badges_set().into_iter().collect();
+
+            for shop_slot in get_rowf_iter() {
+                output.seek(SeekFrom::Start((shop_slot) as _))?;
+                let rand_item = xs_choice(xs,&badges[..]);
+                output.write(&rand_item.to_be_bytes())?;
+            }
+
+            for shop_slot in get_merlow_iter() {
+                output.seek(SeekFrom::Start((shop_slot) as _))?;
+                let rand_item = xs_choice(xs,&badges[..]);
+                output.write(&rand_item.to_be_bytes())?;
+            }
+        },
+        ItemMode::ShuffleBadgesGlobally => {
+            match item_state {
+                ItemState::BadgeDeck(mut deck) => {
+                    for shop_slot in get_rowf_iter() {
+                        output.seek(SeekFrom::Start((shop_slot) as _))?;
+                        if let Some(rand_item) = deck.pop() {
+                            output.write(&rand_item.to_be_bytes())?;
+                        }
+                    }
+
+                    for shop_slot in get_merlow_iter() {
+                        output.seek(SeekFrom::Start((shop_slot) as _))?;
+                        if let Some(rand_item) = deck.pop() {
+                            output.write(&rand_item.to_be_bytes())?;
+                        }
+                    }
+                }
+                other => {
+                    eprintln!(
+                        "unexpected state: {:?} but {:?}",
+                        item_mode,
+                        other
+                    );
+                }
+            }
+        },
+        ItemMode::ShuffleBadgesLocally(sections) => {
+            if sections.contains(BadgeSections::Rowf) {
+                let mut deck = get_rowf_shop_badges();
+                xs_shuffle(xs,&mut deck);
+
+                for shop_slot in get_rowf_iter() {
+                    output.seek(SeekFrom::Start((shop_slot) as _))?;
+                    if let Some(rand_item) = deck.pop() {
+                        output.write(&rand_item.to_be_bytes())?;
+                    }
+                }
+            }
+
+            if sections.contains(BadgeSections::Merlow) {
+                let mut deck = get_merlow_shop_badges();
+                xs_shuffle(xs,&mut deck);
+
+                for shop_slot in get_merlow_iter() {
+                    output.seek(SeekFrom::Start((shop_slot) as _))?;
+                    if let Some(rand_item) = deck.pop() {
+                        output.write(&rand_item.to_be_bytes())?;
+                    }
+                }
+            }
+        },
+        ItemMode::DealUsedInto(sections) => {
+            if sections.contains(BadgeSections::Rowf) {
+                let mut deck = get_used_badges();
+                xs_shuffle(xs, &mut deck);
+
+                for shop_slot in get_rowf_iter() {
+                    output.seek(SeekFrom::Start((shop_slot) as _))?;
+                    if let Some(rand_item) = deck.pop() {
+                        output.write(&rand_item.to_be_bytes())?;
+                    }
+                }
+            }
+
+            if sections.contains(BadgeSections::Merlow) {
+                let mut deck = get_used_badges();
+                xs_shuffle(xs, &mut deck);
+
+                for shop_slot in get_merlow_iter() {
+                    output.seek(SeekFrom::Start((shop_slot) as _))?;
+                    if let Some(rand_item) = deck.pop() {
+                        output.write(&rand_item.to_be_bytes())?;
+                    }
+                }
+            }
+        },
+        ItemMode::DealAllInto(sections) => {
+            if sections.contains(BadgeSections::Rowf) {
+                let mut deck = get_badges_set().into_iter().collect();
+                xs_shuffle(xs, &mut deck);
+
+                for shop_slot in get_rowf_iter() {
+                    output.seek(SeekFrom::Start((shop_slot) as _))?;
+                    if let Some(rand_item) = deck.pop() {
+                        output.write(&rand_item.to_be_bytes())?;
+                    }
+                }
+            }
+
+            if sections.contains(BadgeSections::Merlow) {
+                let mut deck = get_badges_set().into_iter().collect();
+                xs_shuffle(xs, &mut deck);
+
+                for shop_slot in get_merlow_iter() {
+                    output.seek(SeekFrom::Start((shop_slot) as _))?;
+                    if let Some(rand_item) = deck.pop() {
+                        output.write(&rand_item.to_be_bytes())?;
+                    }
+                }
+            }
+        },
+    }
+
+
     output.sync_data()?;
     drop(output);
 
@@ -405,6 +674,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+/// iterate over the locations of the 12 byte chunks of rowf's shop data
+fn get_rowf_iter() -> StepBy<RangeInclusive<u32>> {
+    (0x808808..=0x8088C7).step_by(12)
+}
+
+/// iterate over the locations of the 12 byte chunks of merlow's shop data
+fn get_merlow_iter() -> StepBy<RangeInclusive<u32>> {
+    (0xA3CACC..=0xA3CB7F).step_by(12)
+}
+
 
 fn get_badges_set() -> HashSet<u32> {
     // source: http://shrines.rpgclassics.com/n64/papermario/hacking.shtml
@@ -459,7 +739,7 @@ fn get_badges_set() -> HashSet<u32> {
         0x0116, // P-Down, D-Up
         0x0117, // Power Quake
         0x011A, // Heart Finder
-        0x011B, // Flower Fiender
+        0x011B, // Flower Finder
         0x011C, // Spin Attack
         0x011D, // Dizzy Attack
         0x011E, // I Spy
@@ -567,5 +847,57 @@ fn get_used_badges() -> Vec<u32> {
         0x00fa,
         0x0132,
         0x013c,
+    ]
+}
+
+/// Those badges that are found on the map, (AKA not in Rowf's or Merlow's shops, or through
+/// conversations)
+fn get_map_badges() -> Vec<u32> {
+    vec![
+//TODO
+    ]
+}
+
+/// Those badges that are found in Rowf's shop.
+/// Does not include the I Spy badge which Rowf gives for returning his calculator.
+fn get_rowf_shop_badges() -> Vec<u32> {
+    vec![
+        0x011f,
+        0x00e6,
+        0x00e1,
+        0x00ee,
+        0x00e3,
+        0x00eb,
+        0x00e9,
+        0x010a,
+        0x00e0,
+        0x0143,
+        0x00f4,
+        0x014a,
+        0x014d,
+        0x010b,
+        0x0130,
+        0x0108,
+    ]
+}
+
+/// Those badges that are found in Merlow's shop.
+fn get_merlow_shop_badges() -> Vec<u32> {
+    vec![
+        0x00f3,
+        0x00fc,
+        0x00fe,
+        0x00f1,
+        0x00f2,
+        0x00ff,
+        0x0140,
+        0x0144,
+        0x0100,
+        0x011a,
+        0x011b,
+        0x00f5,
+        0x00fd,
+        0x0105,
+        0x00e2,
     ]
 }
