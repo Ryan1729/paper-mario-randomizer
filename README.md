@@ -1,5 +1,7 @@
 # Paper Mario Randomizer
 
+[Download here](https://github.com/Ryan1729/paper-mario-randomizer/releases/latest)
+
 #### Running
 
 `paper-mario-randomizer` is a command line program. For more usage directions use the `--help` flag.
