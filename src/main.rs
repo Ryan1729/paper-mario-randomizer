@@ -265,6 +265,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }};
     }
 
+    const VERSION: &'static str = "--version";
     const HELP: &'static str = "--help";
     const QUICK_START: &'static str = "--quick-start";
 
@@ -278,6 +279,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match s {
             HELP => {
                 let accepted_args = [
+                    VERSION,
                     HELP,
                     QUICK_START,
                     TOTALLY_RANDOMIZE_MAP_ITEMS,
@@ -304,6 +306,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     println!()
                 }
+                std::process::exit(0)
+            },
+            VERSION => {
+                println!("version {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0)
             },
             QUICK_START => start = StartMode::Quick,

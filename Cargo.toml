@@ -1,6 +1,6 @@
 [package]
 name = "paper-mario-randomizer"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Ryan1729 <ryan1729@gmail.com>"]
 edition = "2018"
 
