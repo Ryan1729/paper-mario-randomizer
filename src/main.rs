@@ -181,7 +181,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut item_mode = d!();
     let mut room_mode = d!();
 
-    const SHUFFLE_ITEMS: &'static str = "--shuffle-items";
+    const TOTALLY_RANDOMIZE_MAP_ITEMS: &'static str = "--totally-randomize-map-items";
     const SHUFFLE_BADGES: &'static str = "--shuffle-badges-globally";
     const SHUFFLE_MAP_BADGES: &'static str = "--shuffle-map-badges-locally";
     const SHUFFLE_ROWF_BADGES: &'static str = "--shuffle-rowf-badges-locally";
@@ -217,7 +217,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!(
                         "Of the flags {:?} only the groups {:?}, {:?}, and {:?} can be mixed together, and only within their own group, not together.",
                         [
-                            SHUFFLE_ITEMS,
+                            TOTALLY_RANDOMIZE_MAP_ITEMS,
                             SHUFFLE_BADGES,
                             SHUFFLE_MAP_BADGES,
                             SHUFFLE_ROWF_BADGES,
@@ -249,15 +249,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }};
     }
 
-    const TOTAL_ROOM_SHUFFLE: &'static str = "--total-room-shuffle";
-    const NO_ROOM_SHUFFLE: &'static str = "--no-room-shuffle";
+    const TOTALLY_RANDOMIZE_ROOMS: &'static str = "--totally-randomize-rooms";
+    const NO_ROOM_RANDOMIZATION: &'static str = "--no-room-randomization";
 
     macro_rules! set_room_mode {
         ($mode: expr) => {{
             if room_mode != d!() {
                 eprintln!(
                     "Only one of {:?} may be used.",
-                     [TOTAL_ROOM_SHUFFLE, NO_ROOM_SHUFFLE]
+                     [TOTALLY_RANDOMIZE_ROOMS, NO_ROOM_RANDOMIZATION]
                  );
                 std::process::exit(3)
             }
@@ -268,6 +268,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     const HELP: &'static str = "--help";
     const QUICK_START: &'static str = "--quick-start";
 
+    const SEED: &'static str = "--seed";
+
+    // zero is not a legal xor_shift seed anyway, so no need to use an Option here.
+    let mut seed: u128 = 0;
+
     while let Some(s) = args.next() {
         let s: &str = &s;
         match s {
@@ -275,7 +280,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let accepted_args = [
                     HELP,
                     QUICK_START,
-                    SHUFFLE_ITEMS,
+                    TOTALLY_RANDOMIZE_MAP_ITEMS,
                     SHUFFLE_BADGES,
                     SHUFFLE_MAP_BADGES,
                     SHUFFLE_ROWF_BADGES,
@@ -286,18 +291,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     DEAL_ALL_INTO_MAP,
                     DEAL_ALL_INTO_ROWF,
                     DEAL_ALL_INTO_MERLOW,
-                    TOTAL_ROOM_SHUFFLE,
-                    NO_ROOM_SHUFFLE
+                    TOTALLY_RANDOMIZE_ROOMS,
+                    NO_ROOM_RANDOMIZATION,
+                    SEED
                 ];
                 println!("reads {}, writes to {}", input_path, output_path);
                 println!("accepted args: ");
                 for arg in accepted_args.iter() {
-                    println!("    {}", arg);
+                    print!("    {}", arg);
+                    if *arg == SEED {
+                        print!(" <positive number>");
+                    }
+                    println!()
                 }
                 std::process::exit(0)
             },
             QUICK_START => start = StartMode::Quick,
-            SHUFFLE_ITEMS => set_item_mode!(ItemMode::TotalRandom),
+            TOTALLY_RANDOMIZE_MAP_ITEMS => set_item_mode!(ItemMode::TotalRandom),
             SHUFFLE_BADGES => set_item_mode!(ItemMode::ShuffleBadgesGlobally),
             SHUFFLE_MAP_BADGES => set_item_mode!(ItemMode::ShuffleBadgesLocally(BadgeSections::Map)),
             SHUFFLE_ROWF_BADGES => set_item_mode!(ItemMode::ShuffleBadgesLocally(BadgeSections::Rowf)),
@@ -308,8 +318,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             DEAL_ALL_INTO_MAP => set_item_mode!(ItemMode::DealAllInto(BadgeSections::Map)),
             DEAL_ALL_INTO_ROWF => set_item_mode!(ItemMode::DealAllInto(BadgeSections::Rowf)),
             DEAL_ALL_INTO_MERLOW => set_item_mode!(ItemMode::DealAllInto(BadgeSections::Merlow)),
-            NO_ROOM_SHUFFLE => set_room_mode!(RoomMode::None),
-            TOTAL_ROOM_SHUFFLE => set_room_mode!(RoomMode::TotalRandom),
+            NO_ROOM_RANDOMIZATION => set_room_mode!(RoomMode::None),
+            TOTALLY_RANDOMIZE_ROOMS => set_room_mode!(RoomMode::TotalRandom),
+            SEED => {
+                seed = args.next()
+                    .ok_or_else(||
+                        format!("{0} needs an argument. For example: {0} 42", SEED)
+                    )?
+                    .parse()?;
+                if seed == 0 {
+                    eprintln!("Interpreting 0 seed as if {} was not passed.", SEED);
+                }
+            },
             _ => {
                 eprintln!("unknown arg {:?}", s);
                 std::process::exit(1)
@@ -420,7 +440,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
     }
 
-    let xs: &mut Xs = &mut [Wrapping(43),Wrapping(42),Wrapping(42),Wrapping(42)];
+    if seed == 0 {
+        use std::time::SystemTime;
+        seed = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    }
+
+    println!("using {} as random seed", seed);
+
+    let xs: &mut Xs = &mut [
+        Wrapping(((seed >> 0) & 0xFFFF_FFFF) as u32),
+        Wrapping(((seed >> 32) & 0xFFFF_FFFF) as u32),
+        Wrapping(((seed >> 64) & 0xFFFF_FFFF) as u32),
+        Wrapping(((seed >> 96) & 0xFFFF_FFFF) as u32),
+    ];
 
     #[derive(Debug)]
     enum ItemState {
