@@ -14,8 +14,8 @@ fn xorshift(xs: &mut Xs) -> u32 {
     xs[0].0
 }
 
-fn xs_u32(xs: &mut Xs, min: u32, max: u32) -> u32 {
-    (xorshift(xs) % (max - min)) + min
+fn xs_u32(xs: &mut Xs, min: u32, one_past_max: u32) -> u32 {
+    (xorshift(xs) % (one_past_max - min)) + min
 }
 
 fn xs_choice_str<'a>(xs: &mut Xs, slice: &[&'a str]) -> &'a str {
